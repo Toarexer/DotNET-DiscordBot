@@ -7,6 +7,8 @@ namespace DiscordBot
 {
     class Program
     {
+        static string Token => File.ReadAllText("token");
+
         const string ChannelName = "cs-corner";  // Name of the discord text channel
         const string TempFolder = ".cstemp/";    // The temp folder where the files can be stored
         const string LogFile = "discordbot.log"; // The log file
@@ -125,6 +127,13 @@ namespace DiscordBot
 
         async Task MainAsync()
         {
+            string token = Token;
+            if (string.IsNullOrEmpty(token))
+            {
+                Console.Error.WriteLine("You must provide a discord token!");
+                Environment.Exit(1);
+            }
+
             DiscordSocketClient Client = new();
             Client.Log += (LogMessage msg) =>
             {
@@ -143,7 +152,7 @@ namespace DiscordBot
                 Directory.CreateDirectory(TempFolder);
             ProcessThread.Start();
 
-            await Client.LoginAsync(TokenType.Bot, File.ReadAllText("token"));
+            await Client.LoginAsync(TokenType.Bot, token);
             await Client.StartAsync();
             await Task.Delay(-1);
         }
@@ -204,20 +213,19 @@ namespace DiscordBot
 
         bool GetCSFiles(IReadOnlyCollection<Attachment> attachments)
         {
-            bool found = false;
+            bool found = attachments.Any(x => x.Filename.ToLower().EndsWith(".cs"));
+            if (!found)
+                return false;
+
 #pragma warning disable SYSLIB0014
             using (WebClient client = new())
 #pragma warning restore SYSLIB0014
                 foreach (Attachment item in attachments)
                 {
-                    Log($"Recieved attachments: {item.Filename} {item.Url}");
-                    if (item.Filename.ToLower().EndsWith(".cs"))
-                    {
-                        client.DownloadFile(item.Url, TempFolder + item.Filename);
-                        found = true;
-                    }
+                    Log($"Recieved attachment: {item.Filename} {item.Url}");
+                    client.DownloadFile(item.Url, TempFolder + item.Filename);
                 }
-            return found;
+            return true;
         }
 
         static void Main(string[] args) => new Program().MainAsync().GetAwaiter().GetResult();
