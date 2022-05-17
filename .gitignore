@@ -1,0 +1,5 @@
+*.old
+.cstemp/
+.vscode/
+discordbot.log
+token

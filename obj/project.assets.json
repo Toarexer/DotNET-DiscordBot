@@ -501,19 +501,19 @@
     ]
   },
   "packageFolders": {
-    "/home/guest/.nuget/packages/": {}
+    "/home/tadam/.nuget/packages/": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/home/guest/discordbot/discordbot.csproj",
+      "projectUniqueName": "/home/tadam/development/cs/discordbot/discordbot.csproj",
       "projectName": "discordbot",
-      "projectPath": "/home/guest/discordbot/discordbot.csproj",
-      "packagesPath": "/home/guest/.nuget/packages/",
-      "outputPath": "/home/guest/discordbot/obj/",
+      "projectPath": "/home/tadam/development/cs/discordbot/discordbot.csproj",
+      "packagesPath": "/home/tadam/.nuget/packages/",
+      "outputPath": "/home/tadam/development/cs/discordbot/obj/",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "/home/guest/.nuget/NuGet/NuGet.Config"
+        "/home/tadam/.nuget/NuGet/NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net6.0"
@@ -552,12 +552,18 @@
         ],
         "assetTargetFallback": true,
         "warn": true,
+        "downloadDependencies": [
+          {
+            "name": "Microsoft.AspNetCore.App.Ref",
+            "version": "[6.0.2, 6.0.2]"
+          }
+        ],
         "frameworkReferences": {
           "Microsoft.NETCore.App": {
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "/usr/lib64/dotnet/sdk/6.0.104/RuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "/usr/share/dotnet/sdk/6.0.102/RuntimeIdentifierGraph.json"
       }
     }
   }
