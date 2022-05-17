@@ -7,10 +7,11 @@ namespace DiscordBot
 {
     class Program
     {
-        const string ChannelName = "cs-corner";
-        const string TempFolder = ".cstemp/";
-        const string LogFile = "discordbot.log";
-        const int LogFileMaxLines = 1000;
+        const string ChannelName = "cs-corner";  // Name of the discord text channel
+        const string TempFolder = ".cstemp/";    // The temp folder where the files can be stored
+        const string LogFile = "discordbot.log"; // The log file
+        const int LogFileMaxLines = 1000;        // How many line should the log file have
+        const int MaxExecutionTime = 30000;      // Maximum time given to the docker process to finish before killing it in miliseconds
 
         static Process Docker = new()
         {
@@ -47,15 +48,15 @@ namespace DiscordBot
                         Thread.Sleep(0);
                     Start = false;
 
-                    Process.Start("docker", "build -qt dotnet_container . ").WaitForExit();
+                    Process.Start("docker", "build -qt dotnet_container .").WaitForExit();
 
                     Docker.Refresh();
                     Docker.Start();
                     Docker.BeginOutputReadLine();
                     Docker.BeginErrorReadLine();
-                    Print($"Process started (PID: {Docker.Id})");
+                    Log($"Process started (PID: {Docker.Id})");
 
-                    Docker.WaitForExit(30000);
+                    Docker.WaitForExit(MaxExecutionTime);
                     Docker.CancelOutputRead();
                     Docker.CancelErrorRead();
 
@@ -63,22 +64,22 @@ namespace DiscordBot
                     while (!Docker.HasExited)
                     {
                         Process.Start("kill", "-SIGKILL " + Docker.Id).WaitForExit();
-                        Print("Killed process " + Docker.Id, MessageType.Warning);
+                        Log("Killed process " + Docker.Id, MessageType.Warning);
                         killed = true;
                     }
-                    Print($"Process exited (PID: {Docker.Id} Exitcode: {Docker.ExitCode})");
+                    Log($"Process exited (PID: {Docker.Id} Exitcode: {Docker.ExitCode})");
 
                     string result = $"process exited with code `{Docker.ExitCode}`{(killed ? " (killed)" : string.Empty)}";
                     Docker.Close();
 
                     CsChannel?.SendMessageAsync(result).Wait();
-                    Print("Sent response: " + result);
+                    Log("Sent response: " + result);
                     foreach (string file in Directory.EnumerateFiles(TempFolder))
                         File.Delete(file);
                 }
                 catch (Exception exception)
                 {
-                    Print("Exception thrown:\n" + exception, MessageType.Error);
+                    Log("Exception thrown:\n" + exception, MessageType.Error);
                     Docker.CancelOutputRead();
                     Docker.CancelErrorRead();
                     Docker.Close();
@@ -92,7 +93,7 @@ namespace DiscordBot
             Info, Warning, Error
         }
 
-        static void Print(string message, MessageType type = MessageType.Info)
+        static void Log(string message, MessageType type = MessageType.Info)
         {
             Console.CursorLeft = 0;
             Console.ForegroundColor = ConsoleColor.DarkGray;
@@ -120,25 +121,23 @@ namespace DiscordBot
                 File.WriteAllLines(LogFile, lines.Skip(lines.Length - LogFileMaxLines));
         }
 
-        Task Log(LogMessage msg)
-        {
-            Console.WriteLine(msg);
-            return Task.CompletedTask;
-        }
-
         static ISocketMessageChannel? CsChannel;
 
         async Task MainAsync()
         {
             DiscordSocketClient Client = new();
-            Client.Log += Log;
-            Client.MessageReceived += Respond;
+            Client.Log += (LogMessage msg) =>
+            {
+                Console.WriteLine(msg);
+                return Task.CompletedTask;
+            };
             Client.MessageReceived += (SocketMessage socketmsg) =>
             {
                 if (socketmsg.Channel.Name == ChannelName)
                     CsChannel = socketmsg.Channel;
                 return Task.CompletedTask;
             };
+            Client.MessageReceived += Respond;
 
             if (!Directory.Exists(TempFolder))
                 Directory.CreateDirectory(TempFolder);
@@ -163,7 +162,7 @@ namespace DiscordBot
             string? code;
             if (Process.GetProcesses().Contains(Docker))
             {
-                Print("Recieved input: " + socketmsg.Content);
+                Log("Recieved input: " + socketmsg.Content);
                 await Docker.StandardInput.WriteLineAsync(socketmsg.Content);
                 return;
             }
@@ -172,7 +171,7 @@ namespace DiscordBot
             {
                 if (!string.IsNullOrEmpty(code = IsMessageCode(msg.Content)))
                 {
-                    Print("Recieved message: " + msg.Content);
+                    Log("Recieved message: " + msg.Content);
                     await DeleteMessages(msg.Channel, 1);
                     await File.WriteAllTextAsync(TempFolder + "Program.cs", code);
                     Start = true;
@@ -181,7 +180,7 @@ namespace DiscordBot
 
                 if (GetCSFiles(msg.Attachments))
                 {
-                    Print("Recieved message: " + msg.Content);
+                    Log("Recieved message: " + msg.Content);
                     await DeleteMessages(msg.Channel, 1);
                     Start = true;
                     return;
@@ -211,7 +210,7 @@ namespace DiscordBot
 #pragma warning restore SYSLIB0014
                 foreach (Attachment item in attachments)
                 {
-                    Print($"Recieved attachments: {item.Filename} {item.Url}");
+                    Log($"Recieved attachments: {item.Filename} {item.Url}");
                     if (item.Filename.ToLower().EndsWith(".cs"))
                     {
                         client.DownloadFile(item.Url, TempFolder + item.Filename);
