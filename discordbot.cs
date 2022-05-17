@@ -1,6 +1,7 @@
 ﻿using Discord;
 using Discord.WebSocket;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net;
 
 namespace DiscordBot
@@ -76,8 +77,7 @@ namespace DiscordBot
 
                     CsChannel?.SendMessageAsync(result).Wait();
                     Log("Sent response: " + result);
-                    foreach (string file in Directory.EnumerateFiles(TempFolder))
-                        File.Delete(file);
+                    ClearDir(TempFolder);
                 }
                 catch (Exception exception)
                 {
@@ -85,9 +85,19 @@ namespace DiscordBot
                     Docker.CancelOutputRead();
                     Docker.CancelErrorRead();
                     Docker.Close();
-                    foreach (string file in Directory.EnumerateFiles(TempFolder))
-                        File.Delete(file);
+                    ClearDir(TempFolder);
                 }
+        }
+
+        static void ClearDir(string path)
+        {
+            foreach (string dir in Directory.EnumerateDirectories(path))
+            {
+                ClearDir(dir);
+                Directory.Delete(dir);
+            }
+            foreach (string file in Directory.EnumerateFiles(path))
+                File.Delete(file);
         }
 
         enum MessageType
@@ -200,7 +210,7 @@ namespace DiscordBot
         async Task DeleteMessages(ISocketMessageChannel channel, int skip)
         {
             var messages = await channel.GetMessagesAsync().FlattenAsync();
-            foreach (IMessage m in messages.Skip(skip))
+            foreach (IMessage m in messages.Skip(skip).Where(x => !x.IsPinned))
                 await channel.DeleteMessageAsync(m);
         }
 
@@ -214,18 +224,46 @@ namespace DiscordBot
         bool GetCSFiles(IReadOnlyCollection<Attachment> attachments)
         {
             bool found = attachments.Any(x => x.Filename.ToLower().EndsWith(".cs"));
-            if (!found)
+            if (!(GetZipFiles(attachments) || found))
+            {
+                ClearDir(TempFolder);
                 return false;
+            }
 
 #pragma warning disable SYSLIB0014
             using (WebClient client = new())
 #pragma warning restore SYSLIB0014
-                foreach (Attachment item in attachments)
+                foreach (Attachment item in attachments.Where(x => !x.Filename.ToLower().EndsWith(".zip")))
                 {
-                    Log($"Recieved attachment: {item.Filename} {item.Url}");
                     client.DownloadFile(item.Url, TempFolder + item.Filename);
+                    Log($"Downloaded: " + item.Url);
                 }
             return true;
+        }
+
+        bool GetZipFiles(IReadOnlyCollection<Attachment> attachments)
+        {
+            bool found = false;
+
+#pragma warning disable SYSLIB0014
+            using (WebClient client = new())
+#pragma warning restore SYSLIB0014
+                foreach (Attachment item in attachments.Where(x => x.Filename.ToLower().EndsWith(".zip")))
+                {
+                    client.DownloadFile(item.Url, TempFolder + item.Filename);
+                    Log($"Downloaded: " + item.Url);
+                    foreach (ZipArchiveEntry entry in ZipFile.OpenRead(TempFolder + item.Filename).Entries)
+                    {
+                        if (entry.ExternalAttributes == 0x41C00010) // 0x41C00010 if it is a directory?
+                            Directory.CreateDirectory(TempFolder + entry.FullName);
+                        else
+                            entry.ExtractToFile(TempFolder + entry.FullName, true);
+                        Log($"Extracted: " + entry.FullName);
+                        if (entry.Name.ToLower().EndsWith(".cs"))
+                            found = true;
+                    }
+                }
+            return found;
         }
 
         static void Main(string[] args) => new Program().MainAsync().GetAwaiter().GetResult();

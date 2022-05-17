@@ -11,12 +11,14 @@ The process is given 30 seconds to run before it gets killed.
 > We may have to use `Thread.Sleep` or other means at the end of the code to make the process wait a bit before exiting.
 
 ## Running code
-There are two ways to run C# code.\
-The first option is to simply send code in a cs code block.
-The second one is to send the .cs files in a message. The message can contain multiple files to be compiled.\
-This allow to send larger codes, but it takes longer because each file must be downloaded.
+There are three ways to run C# code.
+<ol>
+    <li>Send code in a cs code block.</li>
+    <li>Send the .cs and other files in a message. The message can contain multiple files.</li>
+    <li>Send zip files. Files extracted from zip files keep the original directory structure</li>
+</ol> 
 
-* Example of a C# code block\
+### Example of a C# code block:
 ` ```cs`<br>
 `Console.WriteLine("Hello There!");`<br>
 ` ``` `
