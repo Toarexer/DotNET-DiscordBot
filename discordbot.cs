@@ -6,15 +6,24 @@ using System.Net;
 
 namespace DiscordBot
 {
-    class Program
+    static class Program
     {
-        static string Token => File.ReadAllText("token");
-
         const string ChannelName = "cs-corner";  // Name of the discord text channel
         const string TempFolder = ".cstemp/";    // The temp folder where the files can be stored
         const string LogFile = "discordbot.log"; // The log file
         const int LogFileMaxLines = 1000;        // How many line should the log file have
         const int MaxExecutionTime = 30000;      // Maximum time given to the docker process to finish before killing it in miliseconds
+
+        static bool keeptemp = false;
+
+        enum MessageType
+        {
+            Info, Warning, Error
+        }
+
+        static ISocketMessageChannel? CsChannel;
+
+        static Task? DockerTask;
 
         static Process Docker = new()
         {
@@ -28,65 +37,48 @@ namespace DiscordBot
             }
         };
 
-        static bool Start = false;
-        static Thread ProcessThread = new(ProcessThreadFunc);
-
-        static void ProcessThreadFunc()
+        static async void StartDocker()
         {
-            Docker.OutputDataReceived += new DataReceivedEventHandler((object sender, DataReceivedEventArgs e) =>
+            try
             {
-                if (!string.IsNullOrEmpty(e.Data))
-                    CsChannel?.SendMessageAsync($"> {e.Data}").Wait();
-            });
-            Docker.ErrorDataReceived += new DataReceivedEventHandler((object sender, DataReceivedEventArgs e) =>
+                await Process.Start("docker", "build -qt dotnet_container .").WaitForExitAsync();
+
+                Docker.Refresh();
+                Docker.Start();
+                Docker.BeginOutputReadLine();
+                Docker.BeginErrorReadLine();
+                Log($"Process started (PID: {Docker.Id})");
+
+                Docker.WaitForExit(MaxExecutionTime);
+                Docker.CancelOutputRead();
+                Docker.CancelErrorRead();
+
+                bool killed = false;
+                while (!Docker.HasExited)
+                {
+                    Docker.Kill(true);
+                    Log("Killed process " + Docker.Id, MessageType.Warning);
+                    killed = true;
+                }
+                Log($"Process exited (PID: {Docker.Id} Exitcode: {Docker.ExitCode})");
+
+                string result = $"process exited with code `{Docker.ExitCode}`{(killed ? " (killed)" : string.Empty)}";
+                Docker.Close();
+
+                CsChannel?.SendMessageAsync(result).Wait();
+                Log("Sent response: " + result);
+                ClearTempDir();
+            }
+            catch (Exception exception)
             {
-                if (!string.IsNullOrEmpty(e.Data))
-                    CsChannel?.SendMessageAsync($"> *{e.Data}*").Wait();
-            });
+                CsChannel?.SendMessageAsync("*An error occurred while running the code!*").Wait();
+                Log("Exception thrown: " + exception, MessageType.Error);
 
-            while (true)
-                try
-                {
-                    while (!Start)
-                        Thread.Sleep(0);
-                    Start = false;
-
-                    Process.Start("docker", "build -qt dotnet_container .").WaitForExit();
-
-                    Docker.Refresh();
-                    Docker.Start();
-                    Docker.BeginOutputReadLine();
-                    Docker.BeginErrorReadLine();
-                    Log($"Process started (PID: {Docker.Id})");
-
-                    Docker.WaitForExit(MaxExecutionTime);
-                    Docker.CancelOutputRead();
-                    Docker.CancelErrorRead();
-
-                    bool killed = false;
-                    while (!Docker.HasExited)
-                    {
-                        Process.Start("kill", "-SIGKILL " + Docker.Id).WaitForExit();
-                        Log("Killed process " + Docker.Id, MessageType.Warning);
-                        killed = true;
-                    }
-                    Log($"Process exited (PID: {Docker.Id} Exitcode: {Docker.ExitCode})");
-
-                    string result = $"process exited with code `{Docker.ExitCode}`{(killed ? " (killed)" : string.Empty)}";
-                    Docker.Close();
-
-                    CsChannel?.SendMessageAsync(result).Wait();
-                    Log("Sent response: " + result);
-                    ClearDir(TempFolder);
-                }
-                catch (Exception exception)
-                {
-                    Log("Exception thrown:\n" + exception, MessageType.Error);
-                    Docker.CancelOutputRead();
-                    Docker.CancelErrorRead();
-                    Docker.Close();
-                    ClearDir(TempFolder);
-                }
+                Docker.CancelOutputRead();
+                Docker.CancelErrorRead();
+                Docker.Close();
+                ClearTempDir();
+            }
         }
 
         static void ClearDir(string path)
@@ -100,13 +92,16 @@ namespace DiscordBot
                 File.Delete(file);
         }
 
-        enum MessageType
+        static void ClearTempDir()
         {
-            Info, Warning, Error
+            if (!keeptemp)
+                ClearDir(TempFolder);
         }
 
         static void Log(string message, MessageType type = MessageType.Info)
         {
+            message = message.Replace("\n", "\n             ");
+
             Console.CursorLeft = 0;
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.Write("[{0:00}:{1:00}:{2:00}] ", DateTime.Now.Hour, DateTime.Now.Minute, DateTime.Now.Second);
@@ -133,41 +128,7 @@ namespace DiscordBot
                 File.WriteAllLines(LogFile, lines.Skip(lines.Length - LogFileMaxLines));
         }
 
-        static ISocketMessageChannel? CsChannel;
-
-        async Task MainAsync()
-        {
-            string token = Token;
-            if (string.IsNullOrEmpty(token))
-            {
-                Console.Error.WriteLine("You must provide a discord token!");
-                Environment.Exit(1);
-            }
-
-            DiscordSocketClient Client = new();
-            Client.Log += (LogMessage msg) =>
-            {
-                Console.WriteLine(msg);
-                return Task.CompletedTask;
-            };
-            Client.MessageReceived += (SocketMessage socketmsg) =>
-            {
-                if (socketmsg.Channel.Name == ChannelName)
-                    CsChannel = socketmsg.Channel;
-                return Task.CompletedTask;
-            };
-            Client.MessageReceived += Respond;
-
-            if (!Directory.Exists(TempFolder))
-                Directory.CreateDirectory(TempFolder);
-            ProcessThread.Start();
-
-            await Client.LoginAsync(TokenType.Bot, token);
-            await Client.StartAsync();
-            await Task.Delay(-1);
-        }
-
-        async Task Respond(SocketMessage socketmsg)
+        static async Task Recieved(SocketMessage socketmsg)
         {
             if (socketmsg.Channel.Name != ChannelName || socketmsg.Author.IsBot)
                 return;
@@ -179,7 +140,7 @@ namespace DiscordBot
             }
 
             string? code;
-            if (Process.GetProcesses().Contains(Docker))
+            if (DockerTask?.Status == TaskStatus.Running)
             {
                 Log("Recieved input: " + socketmsg.Content);
                 await Docker.StandardInput.WriteLineAsync(socketmsg.Content);
@@ -188,84 +149,147 @@ namespace DiscordBot
 
             if (socketmsg is SocketUserMessage msg)
             {
-                if (!string.IsNullOrEmpty(code = IsMessageCode(msg.Content)))
+                bool gotmsg;
+                if (gotmsg = !string.IsNullOrEmpty(code = IsMessageCode(msg.Content)))
                 {
                     Log("Recieved message: " + msg.Content);
                     await DeleteMessages(msg.Channel, 1);
-                    await File.WriteAllTextAsync(TempFolder + "Program.cs", code);
-                    Start = true;
-                    return;
+                    await File.WriteAllTextAsync($"{TempFolder}{new Random().Next() | 0xFF}.cs", code);
                 }
 
-                if (GetCSFiles(msg.Attachments))
+                if (GetCSFiles(msg.Attachments) || gotmsg)
                 {
-                    Log("Recieved message: " + msg.Content);
                     await DeleteMessages(msg.Channel, 1);
-                    Start = true;
-                    return;
+                    DockerTask = Task.Run(StartDocker);
                 }
             }
         }
 
-        async Task DeleteMessages(ISocketMessageChannel channel, int skip)
+        static async Task DeleteMessages(ISocketMessageChannel channel, int skip = 0)
         {
             var messages = await channel.GetMessagesAsync().FlattenAsync();
             foreach (IMessage m in messages.Skip(skip).Where(x => !x.IsPinned))
-                await channel.DeleteMessageAsync(m);
+                _ = channel.DeleteMessageAsync(m);
         }
 
-        string? IsMessageCode(string message)
+        static string? IsMessageCode(string message)
         {
             if (message.Length > 8 && message.Substring(0, 5).ToLower() == "```cs" && message.EndsWith("```"))
                 return message.Substring(5, message.Length - 8);
             return null;
         }
 
-        bool GetCSFiles(IReadOnlyCollection<Attachment> attachments)
+#pragma warning disable SYSLIB0014
+        static bool GetCSFiles(IReadOnlyCollection<Attachment> attachments)
         {
             bool found = attachments.Any(x => x.Filename.ToLower().EndsWith(".cs"));
             if (!(GetZipFiles(attachments) || found))
             {
-                ClearDir(TempFolder);
+                ClearTempDir();
                 return false;
             }
+            List<Task> tasks = new();
 
-#pragma warning disable SYSLIB0014
             using (WebClient client = new())
-#pragma warning restore SYSLIB0014
                 foreach (Attachment item in attachments.Where(x => !x.Filename.ToLower().EndsWith(".zip")))
-                {
-                    client.DownloadFile(item.Url, TempFolder + item.Filename);
-                    Log($"Downloaded: " + item.Url);
-                }
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        await client.DownloadFileTaskAsync(item.Url, TempFolder + item.Filename);
+                        Log($"Downloaded: " + item.Url);
+                    }));
+            Task.WhenAll(tasks).Wait();
             return true;
         }
 
-        bool GetZipFiles(IReadOnlyCollection<Attachment> attachments)
+        static bool GetZipFiles(IReadOnlyCollection<Attachment> attachments)
         {
             bool found = false;
+            List<Task> tasks = new();
 
-#pragma warning disable SYSLIB0014
             using (WebClient client = new())
-#pragma warning restore SYSLIB0014
                 foreach (Attachment item in attachments.Where(x => x.Filename.ToLower().EndsWith(".zip")))
-                {
-                    client.DownloadFile(item.Url, TempFolder + item.Filename);
-                    Log($"Downloaded: " + item.Url);
-                    foreach (ZipArchiveEntry entry in ZipFile.OpenRead(TempFolder + item.Filename).Entries)
+                    tasks.Add(Task.Run(async () =>
                     {
-                        if (entry.ExternalAttributes == 0x41C00010) // 0x41C00010 if it is a directory?
-                            Directory.CreateDirectory(TempFolder + entry.FullName);
-                        else
-                            entry.ExtractToFile(TempFolder + entry.FullName, true);
-                        Log($"Extracted: " + entry.FullName);
-                        if (entry.Name.ToLower().EndsWith(".cs"))
-                            found = true;
-                    }
-                }
+                        await client.DownloadFileTaskAsync(item.Url, TempFolder + item.Filename);
+                        Log($"Downloaded: " + item.Url);
+                        foreach (ZipArchiveEntry entry in ZipFile.OpenRead(TempFolder + item.Filename).Entries)
+                            if (entry.ExternalAttributes == 0x41C00010) // 0x41C00010 if it is a directory?
+                            {
+                                Directory.CreateDirectory(TempFolder + entry.FullName);
+                                Log($"Created directory: " + entry.FullName);
+                            }
+                            else
+                            {
+                                entry.ExtractToFile(TempFolder + entry.FullName, true);
+                                Log($"Extracted: " + entry.FullName);
+                                if (entry.Name.ToLower().EndsWith(".cs"))
+                                    found = true;
+                            }
+                    }));
             return found;
         }
+#pragma warning restore SYSLIB0014
 
-        static void Main(string[] args) => new Program().MainAsync().GetAwaiter().GetResult();
+        static void SetEvents(DiscordSocketClient client)
+        {
+            client.MessageReceived += Recieved;
+
+            client.MessageReceived += (SocketMessage socketmsg) =>
+            {
+                if (socketmsg.Channel.Name == ChannelName)
+                    CsChannel = socketmsg.Channel;
+                return Task.CompletedTask;
+            };
+
+            client.Log += (LogMessage msg) =>
+            {
+                Console.WriteLine(msg);
+                return Task.CompletedTask;
+            };
+
+            Docker.OutputDataReceived += new DataReceivedEventHandler((object sender, DataReceivedEventArgs e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data))
+                    CsChannel?.SendMessageAsync($"> {e.Data}").Wait();
+            });
+
+            Docker.ErrorDataReceived += new DataReceivedEventHandler((object sender, DataReceivedEventArgs e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data))
+                    CsChannel?.SendMessageAsync($"> *{e.Data}*").Wait();
+            });
+
+            Console.CancelKeyPress += (object? sender, ConsoleCancelEventArgs e) =>
+            {
+                Console.CursorLeft = 0;
+                Console.WriteLine("exiting...");
+                Environment.Exit(0);
+            };
+        }
+
+        static async Task MainAsync(string[] args)
+        {
+            // Discord bot token
+            string token = args.Contains("token=") ? args.Last(x => x.StartsWith("token=")).Substring(6) : File.ReadAllText("token");
+            if (string.IsNullOrEmpty(token))
+            {
+                Console.Error.WriteLine("You must provide a discord token!");
+                Environment.Exit(1);
+            }
+
+            keeptemp = args.Contains("keeptemp");
+
+            DiscordSocketClient client = new();
+            SetEvents(client);
+
+            if (!Directory.Exists(TempFolder))
+                Directory.CreateDirectory(TempFolder);
+
+            await client.LoginAsync(TokenType.Bot, token);
+            await client.StartAsync();
+            await Task.Delay(-1);
+        }
+
+        static void Main(string[] args) => MainAsync(args).GetAwaiter().GetResult();
     }
 }
