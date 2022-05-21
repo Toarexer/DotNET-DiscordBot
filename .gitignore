@@ -1,5 +1,6 @@
 *.old
 .temp/
 .vscode/
+discordbot.channels
 discordbot.log
-token
+discordbot.token
