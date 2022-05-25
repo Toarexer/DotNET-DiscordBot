@@ -8,20 +8,26 @@ namespace DiscordBot
 {
     static class Program
     {
-        const string TempDir = ".temp/";            // The temp directory
-        const string ChannelsFile = "discordbot.channels"; // The file that stores the channel ids the bot will listen on
-        const string LogFile = "discordbot.log";    // The log file
-        const int LogFileMaxLines = 1000;           // How many line should the log file have
-        const int MaxExecutionTime = 30000;         // Maximum time given to the docker process to finish before killing it in miliseconds
+        const string TempDir = ".temp/";                    // The temp directory
+        const string ChannelsFile = "discordbot.channels";  // The file that stores the channel ids the bot will listen on
+        const string LogFile = "discordbot.log";            // The log file
+        const int LogFileMaxLines = 1000;                   // How many line should the log file have
+        const int MaxExecutionTime = 30000;                 // Maximum time given to the docker process to finish before killing it in miliseconds
 
         static bool keeptemp = false;
         static bool keepmessages = false;
 
         class Docker
         {
+            public enum ProcessExitCause
+            {
+                Ok, Interrupted, TimedOut
+            }
+
             public ISocketMessageChannel DiscordChannel;
             public Process DockerProcess;
             public Task DokcerTask;
+            public ProcessExitCause ExitCause = ProcessExitCause.Ok;
 
             public Docker(ISocketMessageChannel channel)
             {
@@ -67,28 +73,44 @@ namespace DiscordBot
                     DockerProcess.CancelOutputRead();
                     DockerProcess.CancelErrorRead();
 
-                    bool killed = false;
-                    while (!DockerProcess.HasExited)
-                    {
-                        DockerProcess.Kill(true);
-                        Log("Killed process " + DockerProcess.Id, MessageType.Warning);
-                        killed = true;
-                    }
+                    if (!DockerProcess.HasExited)
+                        Kill(false);
                     Log($"Process exited (PID: {DockerProcess.Id} Exitcode: {DockerProcess.ExitCode})");
 
-                    string result = $"process exited with code `{DockerProcess.ExitCode}`{(killed ? " (killed)" : string.Empty)}";
+                    string result = $"process exited with code `{DockerProcess.ExitCode}`" + ExitCause switch
+                    {
+                        ProcessExitCause.Interrupted => " (interrupted)",
+                        ProcessExitCause.TimedOut => " (killed)",
+                        _ => string.Empty
+                    };
                     DiscordChannel.SendMessageAsync(result).Wait();
-                    Log("Sent response: " + result);
+                    Log($"Process result (PID: {DockerProcess.Id} Channel: {DiscordChannel.Id} Result: \"{result}\")");
                 }
                 catch (Exception exception)
                 {
                     DiscordChannel.SendMessageAsync("*An error occurred while running the code!*").Wait();
-                    Log("Exception thrown: " + exception, MessageType.Error);
+                    Log($"Exception thrown (PID: {DockerProcess.Id} Exception: {exception})", MessageType.Error);
                 }
 
                 DockerProcess.Close();
                 Containers.Remove(this);
                 DeleteTempDir(DiscordChannel.Id);
+            }
+
+            public void Kill(bool interrupted)
+            {
+                if (interrupted)
+                {
+                    Process.Start("kill", "-SIGINT " + DockerProcess.Id).WaitForExit();
+                    Log($"Process interrupted (PID: {DockerProcess.Id})");
+                    ExitCause = ProcessExitCause.Interrupted;
+                }
+                else
+                {
+                    DockerProcess.Kill(true);
+                    Log($"Process timed out (PID: {DockerProcess.Id})", MessageType.Warning);
+                    ExitCause = ProcessExitCause.TimedOut;
+                }
             }
 
             public static List<Docker> Containers = new();
@@ -220,8 +242,11 @@ namespace DiscordBot
                     DeleteMessages(msg.Channel, 0);
                 else if (Docker.Containers.Any(x => x.DiscordChannel.Id == msg.Channel.Id))
                 {
+                    Docker docker = Docker.Containers.First(x => x.DiscordChannel.Id == msg.Channel.Id);
+                    if (msg.Content == "^c" || msg.Content == "^C")
+                        docker.Kill(true);
                     Log("Recieved input: " + msg.Content);
-                    Docker.Containers.First(x => x.DiscordChannel.Id == msg.Channel.Id).DockerProcess.StandardInput.WriteLineAsync(msg.Content);
+                    docker.DockerProcess.StandardInput.WriteLineAsync(msg.Content);
                 }
                 else
                 {
